@@ -675,7 +675,8 @@ class DocumentService:
         chunks: List[ChunkData] = []
         file_name = metadata.get("file_name", os.path.basename(file_path))
         file_hash = metadata.get("file_hash", "")
-        max_tokens = self.config.chunk_max_tokens
+        max_rows_per_chunk = getattr(self.config, "excel_max_rows_per_chunk", 100)
+        max_chunks_per_sheet = getattr(self.config, "excel_max_chunks_per_sheet", None)
 
         try:
             for s_idx, sheet_name in enumerate(wb.sheetnames):
@@ -688,6 +689,8 @@ class DocumentService:
                 headers = None
                 header_line = f"Sheet: {sheet_name}"
                 current_rows: List[str] = []
+                current_row_count = 0
+                chunk_count_for_sheet = 0
 
                 for r in rows:
                     # Treat first non-empty row as header row
@@ -695,6 +698,8 @@ class DocumentService:
                         if not any(c is not None and str(c).strip() for c in r):
                             continue
                         headers = ["" if c is None else str(c).strip() for c in r]
+                        if any(headers):
+                            header_line = f"Sheet: {sheet_name} | Headers: {' | '.join([h for h in headers if h])}"
                         continue
 
                     cells = ["" if v is None else str(v).strip() for v in r]
@@ -710,9 +715,10 @@ class DocumentService:
 
                     row_text = "Row: " + " | ".join(parts) if parts else "Row: " + " | ".join(cells)
 
-                    # test token budget
-                    trial = header_line + "\n" + "\n".join(current_rows + [row_text])
-                    if current_rows and self._count_tokens(trial) > max_tokens:
+                    current_rows.append(row_text)
+                    current_row_count += 1
+
+                    if current_row_count >= max_rows_per_chunk:
                         piece = header_line + "\n" + "\n".join(current_rows)
                         chunk_hash = hashlib.sha256(piece.encode()).hexdigest()[:16]
 
@@ -755,9 +761,12 @@ class DocumentService:
                             file_hash=file_hash,
                         ))
 
-                        current_rows = [row_text]
-                    else:
-                        current_rows.append(row_text)
+                        current_rows = []
+                        current_row_count = 0
+                        chunk_count_for_sheet += 1
+
+                        if max_chunks_per_sheet is not None and chunk_count_for_sheet >= max_chunks_per_sheet:
+                            break
 
                 if current_rows:
                     piece = header_line + "\n" + "\n".join(current_rows)
